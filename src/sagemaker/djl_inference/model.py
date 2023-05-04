@@ -52,6 +52,7 @@ class DJLServingEngineEntryPointDefaults(Enum):
     DEEPSPEED = ("DeepSpeed", "djl_python.deepspeed")
     HUGGINGFACE_ACCELERATE = ("Python", "djl_python.huggingface")
     STABLE_DIFFUSION = ("DeepSpeed", "djl_python.stable-diffusion")
+    TRANSFORMER_NEURON_X = ("Python", "djl_python.transformers-neuronx")
 
 
 class DJLPredictor(Predictor):
@@ -116,6 +117,12 @@ def _validate_engine_for_model_type(cls, model_type: str, num_partitions: int, n
                 "The number of attention heads is not evenly divisible by the number of partitions."
                 "Please set the number of partitions such that the number of attention heads can be"
                 "evenly split across the partitions."
+            )
+    if cls == TransformersNeuronXModel:
+        if model_type not in defaults.NEURONX_SUPPORTED_ARCHITECTURES:
+            raise ValueError(
+                f"{model_type} is not supported by Transformers NeuronX. "
+                f"Supported model_types are {defaults.NEURONX_SUPPORTED_ARCHITECTURES}"
             )
     return cls
 
@@ -223,6 +230,8 @@ class DJLModel(FrameworkModel):
             instance.engine = DJLServingEngineEntryPointDefaults.STABLE_DIFFUSION
         elif isinstance(instance, DeepSpeedModel):
             instance.engine = DJLServingEngineEntryPointDefaults.DEEPSPEED
+        elif isinstance(instance, TransformersNeuronXModel):
+            instance.engine = DJLServingEngineEntryPointDefaults.TRANSFORMER_NEURON_X
         else:
             instance.engine = DJLServingEngineEntryPointDefaults.HUGGINGFACE_ACCELERATE
         return instance
@@ -458,12 +467,7 @@ class DJLModel(FrameworkModel):
                 is not None. Otherwise, return None.
         """
 
-        instance_family = instance_type.rsplit(".", 1)[0]
-        if instance_family not in defaults.ALLOWED_INSTANCE_FAMILIES:
-            raise ValueError(
-                f"Invalid instance type. DJLModels only support deployment to instances"
-                f"with GPUs. Supported instance families are {defaults.ALLOWED_INSTANCE_FAMILIES}"
-            )
+        self._validate_deploy_instance_type(instance_type)
 
         return super(DJLModel, self).deploy(
             initial_instance_count=initial_instance_count,
@@ -621,6 +625,16 @@ class DJLModel(FrameworkModel):
             "SERVING_OPTS"
         ] = f'"-Dai.djl.logging.level={_LOG_LEVEL_MAP[self.container_log_level]}"'
         return self.env
+
+    def _validate_deploy_instance_type(self, instance_type: str):
+        """Placeholder docstring"""
+
+        instance_family = instance_type.rsplit(".", 1)[0]
+        if instance_family not in defaults.ALLOWED_INSTANCE_FAMILIES:
+            raise ValueError(
+                f"Invalid instance type. DJLModels only support deployment to instances"
+                f"with GPUs. Supported instance families are {defaults.ALLOWED_INSTANCE_FAMILIES}"
+            )
 
 
 class DeepSpeedModel(DJLModel):
@@ -849,3 +863,46 @@ class HuggingFaceAccelerateModel(DJLModel):
             serving_properties["option.dtype"] = "auto"
             serving_properties.pop("option.load_in_8bit", None)
         return serving_properties
+
+
+class TransformersNeuronXModel(DJLModel):
+    """A DJL TransformersNeuronX SageMaker ``Model``
+
+    This can be deployed to a SageMaker ``Endpoint``.
+    """
+
+    _framework = "djl-neuronx"
+
+    def __init__(
+        self,
+        model_id: str,
+        role: str,
+        tensor_parallel_degree: int = None,
+        batch_size: int = None,
+        **kwargs,
+    ):
+        super(TransformersNeuronXModel, self).__init__(
+            model_id,
+            role,
+            **kwargs
+        )
+        if self.number_of_partitions and tensor_parallel_degree:
+            logger.warning(
+                "Both number_of_partitions and tensor_parallel_degree have been set for "
+                "TransformerNeuronXModel."
+                "These mean the same thing for DeepSpeedModel. Please only set "
+                "tensor_parallel_degree."
+                "number_of_partitions will be ignored"
+            )
+
+        self.number_of_partitions = tensor_parallel_degree or self.number_of_partitions
+        self.batch_size = batch_size
+
+    def _validate_deploy_instance_type(self, instance_type: str):
+        """Placeholder docstring"""
+        instance_family = instance_type.rsplit(".", 1)[0]
+        if instance_family not in {"ml.inf2", "ml.trn1"}:
+            raise ValueError(
+                f"Invalid instance type. TransformersNeuronX models only support deployment to "
+                f"instances with inferentia 2 or trainium 1 chips."
+            )

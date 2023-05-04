@@ -43,6 +43,12 @@ DEEPSPEED_SUPPORTED_ARCHITECTURES = {
     STABLE_DIFFUSION_MODEL_TYPE,
 }
 
+NEURONX_SUPPORTED_ARCHITECTURES = {
+    "opt",
+    "gpt2",
+    "gptj"
+}
+
 ALLOWED_INSTANCE_FAMILIES = {
     "ml.g4dn",
     "ml.g5",
